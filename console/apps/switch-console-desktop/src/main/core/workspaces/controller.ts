@@ -76,6 +76,12 @@ import {
   renameAgent,
   updateAgentIcon,
   updateRoom,
+  createRoomSchedule,
+  deleteRoomSchedule,
+  listRoomSchedules,
+  pauseRoomSchedule,
+  resumeRoomSchedule,
+  updateRoomSchedule,
   updateTemplate,
 } from '@main/core/switch-servers/gateway-client';
 import {
@@ -127,6 +133,7 @@ import type {
   CreateRoomParams,
   CreateRoomResult,
   DeleteBridgeParams,
+  CreateRoomScheduleParams,
   DeleteBridgeResult,
   LinkedIdentity,
   MessagingApps,
@@ -138,6 +145,7 @@ import type {
   RemoteRoomDetail,
   RemoteRoomGroup,
   RemoteRoomRole,
+  RemoteRoomSchedule,
   RemoteRoomSummary,
   RemoveTeamsTeamResult,
   RetireOutcome,
@@ -146,6 +154,7 @@ import type {
   UpdateBridgeParams,
   UpdateBridgeResult,
   UpdateRoomParams,
+  UpdateRoomScheduleParams,
 } from '@shared/core/switch-servers/switch-servers';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import type { Workspace } from '@shared/core/workspaces/workspaces';
@@ -943,6 +952,49 @@ export const workspacesController = createRPCController({
       return channel;
     });
   },
+
+  listRoomSchedules: (params: {
+    workspaceId: string;
+    roomId: string;
+  }): Promise<RemoteRoomSchedule[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => listRoomSchedules(server, params.roomId)),
+
+  createRoomSchedule: (params: CreateRoomScheduleParams): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      createRoomSchedule(server, params.roomId, params)
+    ),
+
+  updateRoomSchedule: (params: UpdateRoomScheduleParams): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateRoomSchedule(server, params.roomId, params.scheduleId, params)
+    ),
+
+  pauseRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+  }): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      pauseRoomSchedule(server, params.roomId, params.scheduleId)
+    ),
+
+  resumeRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+  }): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      resumeRoomSchedule(server, params.roomId, params.scheduleId)
+    ),
+
+  deleteRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+  }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      deleteRoomSchedule(server, params.roomId, params.scheduleId)
+    ),
 
   listRoomGroups: (workspaceId: string): Promise<RemoteRoomGroup[]> =>
     withWorkspaceSession(workspaceId, fetchRoomGroups),

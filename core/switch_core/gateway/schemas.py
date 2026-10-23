@@ -1723,3 +1723,46 @@ class SlackTokensChecked(BaseModel):
     workspace_id: str
     workspace_name: str
     bot_name: str
+
+
+# ── Room Schedules ──────────────────────────────────────────────────────────
+
+
+class RoomScheduleCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    message: str = Field(..., min_length=1)
+    target_agent_ids: list[str] = Field(..., min_length=1)
+    schedule_type: Literal["one_off", "recurring"] = "recurring"
+    cron_expression: str | None = None
+    timezone: str = "UTC"
+    one_off_datetime: datetime | None = None
+    missed_run_policy: Literal["run_once", "skip"] = "run_once"
+
+
+class RoomScheduleUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    message: str | None = Field(default=None, min_length=1)
+    target_agent_ids: list[str] | None = None
+    cron_expression: str | None = None
+    timezone: str | None = None
+    one_off_datetime: datetime | None = None
+    missed_run_policy: Literal["run_once", "skip"] | None = None
+
+
+class RoomScheduleResponse(BaseModel):
+    id: str
+    tenant_id: str
+    room_id: str
+    created_by_user_id: str | None
+    name: str
+    message: str
+    target_agent_ids: list[str]
+    schedule_type: str
+    cron_expression: str | None
+    timezone: str
+    next_run_at: datetime | None
+    last_run_at: datetime | None
+    status: str
+    missed_run_policy: str
+    created_at: datetime
+    updated_at: datetime

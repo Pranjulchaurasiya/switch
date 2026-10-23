@@ -31,6 +31,7 @@ vi.mock('@renderer/lib/ipc', () => ({
       updateRoom,
       getRoomDetail,
       listAgents: vi.fn(() => Promise.resolve([])),
+      listRoomSchedules: vi.fn(() => Promise.resolve([])),
     },
     agents: { getAgents: vi.fn(() => Promise.resolve([])) },
   },
