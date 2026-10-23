@@ -505,6 +505,9 @@ export async function buildSharedHostConfig(
       skill: sessionLaunch.skill,
       context: sessionLaunch.context,
       instructions: sessionLaunch.instructions,
+      ...(launch.specialization?.midTurnDelivery === 'queue'
+        ? { midTurnDelivery: 'queue' as const }
+        : {}),
     },
   };
   return config;

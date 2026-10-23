@@ -239,6 +239,8 @@ class MessagePayload(BaseModel):
     # arrived: "owner", "admin" or "member". None for an agent, the platform,
     # or a person no Switch user has claimed.
     sender_role: str | None = None
+    # Whether the sending person owns this agent.
+    sender_owns_agent: bool = False
 
 
 class CommandPayload(BaseModel):

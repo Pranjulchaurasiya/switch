@@ -592,8 +592,13 @@ class AgentRecipient:
             if addressed
             else None
         )
+        sender_owns_agent = (
+            await self._sender_owns_agent(session, event.sender, event.content)
+            if addressed
+            else False
+        )
         own_event = _message_own_event(
-            meta, event, thread_id, self.agent.id, sender_role
+            meta, event, thread_id, self.agent.id, sender_role, sender_owns_agent
         )
 
         async def after(row: InboundEvent) -> None:
@@ -662,9 +667,17 @@ class AgentRecipient:
             await self._after_follow_up(row)
 
         sender_role = await self._sender_role(session, event.sender, event.content)
+        sender_owns_agent = await self._sender_owns_agent(
+            session, event.sender, event.content
+        )
         return Delivery(
             own_event=_message_own_event(
-                meta, event, event.thread_root_id, self.agent.id, sender_role
+                meta,
+                event,
+                event.thread_root_id,
+                self.agent.id,
+                sender_role,
+                sender_owns_agent,
             ),
             after=after,
         )
@@ -825,6 +838,11 @@ class AgentRecipient:
             if gate.addressed
             else None
         )
+        sender_owns_agent = (
+            await self._sender_owns_agent(session, anchor.sender, anchor.content)
+            if gate.addressed
+            else False
+        )
 
         def own_event(row: InboundEvent) -> OwnEvent:
             parts = written(row)
@@ -851,6 +869,7 @@ class AgentRecipient:
                 ],
                 opening_message=opening,
                 sender_role=sender_role,
+                sender_owns_agent=sender_owns_agent,
             )
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
@@ -1734,6 +1753,20 @@ class AgentRecipient:
                 return role
         return None
 
+    async def _sender_owns_agent(
+        self, session: AsyncSession, sender: str, content: Mapping[str, object]
+    ) -> bool:
+        """Whether the sending person is the owner of this agent."""
+        if not self.agent.owner_id:
+            return False
+        principal = await self._addressing.resolve_sender(session, sender, content)
+        return bool(
+            principal
+            and principal.kind == "user"
+            and principal.user_ids
+            and self.agent.owner_id in principal.user_ids
+        )
+
     def _sender_handle(self, event: InboundMessage) -> str:
         """The @-handle to tag the message sender with.
 
@@ -1782,6 +1815,7 @@ def _message_own_event(
     thread_id: str | None,
     agent_id: str,
     sender_role: str | None,
+    sender_owns_agent: bool = False,
 ) -> Callable[[InboundEvent], OwnEvent]:
     """How an agent's own event for a message is built once the message is
     written."""
@@ -1806,6 +1840,7 @@ def _message_own_event(
             thread_id=thread_id,
             opening_message=opening_message_for(meta, agent_id),
             sender_role=sender_role,
+            sender_owns_agent=sender_owns_agent,
         )
         # Serialising runs once per agent per message, so only when it will
         # be seen.

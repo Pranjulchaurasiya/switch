@@ -588,6 +588,12 @@ export class HostedSession {
     return this.commands.get(turnId)?.origin ?? null;
   }
 
+  /** The turn currently running in this session, if one is running. */
+  get runningTurn(): { turnId: string; origin: Origin | null } | null {
+    if (!this.activeTurn) return null;
+    return { turnId: this.activeTurn, origin: this.originOf(this.activeTurn) };
+  }
+
   /**
    * Apply what Switch recorded for one of this session's approval requests:
    * a person's answer, or the request running out of time. Serialised with

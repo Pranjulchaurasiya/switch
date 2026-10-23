@@ -20,6 +20,7 @@ export interface BuildSharedHostConfigInput {
     skill: string;
     context: string;
     agentDefinition: { name: string; path: string } | undefined;
+    midTurnDelivery?: 'steer' | 'queue';
   };
   ids: { hostId: string; epoch: string; connectionId: string };
 }
@@ -72,6 +73,9 @@ export function buildSharedHostConfig(input: BuildSharedHostConfigInput): Shared
       codexConfig: input.execution.codexConfig,
       skill: input.execution.skill,
       context: input.execution.context,
+      ...(input.execution.midTurnDelivery
+        ? { midTurnDelivery: input.execution.midTurnDelivery }
+        : {}),
       ...(input.execution.agentDefinition
         ? { agentDefinition: { ...input.execution.agentDefinition } }
         : {}),
