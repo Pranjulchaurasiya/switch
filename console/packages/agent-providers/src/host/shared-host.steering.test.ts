@@ -12,6 +12,8 @@ import { ServiceNotices } from './service-notices';
 import { connectParent } from './session-channel';
 import { runSharedHost } from './shared-host';
 
+if (process.platform === 'win32') vi.setConfig({ testTimeout: 60_000 });
+
 const roots: string[] = [];
 afterEach(async () => {
   vi.unstubAllGlobals();

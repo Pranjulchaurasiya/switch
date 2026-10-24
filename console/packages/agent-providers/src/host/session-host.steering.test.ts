@@ -8,6 +8,8 @@ import type { ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
 import { HostedSession } from './session-host';
 
+if (process.platform === 'win32') vi.setConfig({ testTimeout: 60_000 });
+
 const roots: string[] = [];
 const hosts: HostedSession[] = [];
 
