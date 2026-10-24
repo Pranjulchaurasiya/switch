@@ -53,12 +53,26 @@ function fakeParent() {
     error?: string;
     event?: { sequence: number };
     identity?: Record<string, string>;
+    ask?: { type: string; roomId?: string };
   };
   const sent: Sent[] = [];
+  const roomInstructions: { value: string | Error } = { value: '' };
   const port = Object.assign(new EventEmitter(), {
     connected: true,
     send: (message: unknown) => {
-      sent.push(message as Sent);
+      const sentMessage = message as Sent;
+      if (sentMessage.kind === 'ask' && sentMessage.ask?.type === 'room-instructions') {
+        const { value } = roomInstructions;
+        queueMicrotask(() =>
+          port.emit(
+            'message',
+            value instanceof Error
+              ? { kind: 'answer', id: sentMessage.id, ok: false, error: value.message }
+              : { kind: 'answer', id: sentMessage.id, ok: true, value: { instructions: value } }
+          )
+        );
+      }
+      sent.push(sentMessage);
       return true;
     },
   });
@@ -76,7 +90,7 @@ function fakeParent() {
     );
     return reply!;
   };
-  return { port, sent, ask };
+  return { port, sent, ask, roomInstructions };
 }
 
 const roomMessage = (input: {
