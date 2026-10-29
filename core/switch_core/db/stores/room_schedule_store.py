@@ -99,7 +99,7 @@ class RoomScheduleStore:
         status: str,
         next_run_at: datetime | None = None,
     ) -> RoomSchedule | None:
-        schedule = await session.get(RoomSchedule, schedule_id)
+        schedule = await self.get(session, schedule_id)
         if schedule is None:
             return None
         schedule.status = status
@@ -109,7 +109,7 @@ class RoomScheduleStore:
         return schedule
 
     async def delete(self, session: AsyncSession, schedule_id: str) -> bool:
-        schedule = await session.get(RoomSchedule, schedule_id)
+        schedule = await self.get(session, schedule_id)
         if schedule is None:
             return False
         await session.delete(schedule)

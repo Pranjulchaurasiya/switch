@@ -236,6 +236,7 @@ export const RoomSchedulesSection = observer(function RoomSchedulesSection({
                           disabled={isActing}
                           onClick={() => void handleTogglePause(schedule)}
                           title={schedule.status === 'paused' ? 'Resume schedule' : 'Pause schedule'}
+                          aria-label={schedule.status === 'paused' ? 'Resume schedule' : 'Pause schedule'}
                         >
                           {schedule.status === 'paused' ? (
                             <Play className="size-3.5 text-foreground-success" />
