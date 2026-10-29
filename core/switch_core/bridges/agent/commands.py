@@ -2084,7 +2084,10 @@ COMMANDS: list[Command] = [
                 required=True,
             ),
             CommandArg(
-                "turn_id", "Turn ID shown on the queued activity card", required=True
+                "turn_id",
+                "Turn ID shown on the queued activity card",
+                required=True,
+                free_text=True,
             ),
         ),
         addressed=_addressed_by_required_first_mention,
