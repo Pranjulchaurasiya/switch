@@ -55,13 +55,21 @@ export const RoomSchedulesSection = observer(function RoomSchedulesSection({
   const [editingSchedule, setEditingSchedule] = useState<RemoteRoomSchedule | null>(null);
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
 
-  const canManage = switchRoomsStore.canDeleteRoom(workspaceId, room);
+  const canManage = Boolean(
+    (room as { canDelete?: boolean }).canDelete || switchRoomsStore.canDeleteRoom(workspaceId, room),
+  );
   const remoteAgents = useWorkspaceAgents(workspaceId);
   const agentMap = new Map((remoteAgents.data ?? []).map((a) => [a.id, a.displayName || a.name]));
 
   const query = useQuery({
     queryKey: roomSchedulesKey(workspaceId, room.id),
-    queryFn: () => rpc.workspaces.listRoomSchedules({ workspaceId, roomId: room.id }),
+    queryFn: async () => {
+      try {
+        return await rpc.workspaces.listRoomSchedules({ workspaceId, roomId: room.id });
+      } catch {
+        return [];
+      }
+    },
   });
 
   const schedules = query.data ?? [];

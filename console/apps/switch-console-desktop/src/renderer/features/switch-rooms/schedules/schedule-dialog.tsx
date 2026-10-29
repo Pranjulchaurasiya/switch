@@ -254,7 +254,7 @@ export function ScheduleDialog({
                     <SelectTrigger className="h-8 text-xs">
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent>
+                    <SelectContent className="min-w-[155px]">
                       <SelectItem value="run_once">Run once on wake</SelectItem>
                       <SelectItem value="skip">Skip if overdue</SelectItem>
                     </SelectContent>
