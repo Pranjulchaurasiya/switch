@@ -75,6 +75,7 @@ import {
   updateAgentDisplayName,
   renameAgent,
   updateAgentIcon,
+  syncRoomName,
   updateRoom,
   createRoomSchedule,
   deleteRoomSchedule,
@@ -153,6 +154,7 @@ import type {
   TeamsTeamsResult,
   UpdateBridgeParams,
   UpdateBridgeResult,
+  SyncRoomNameParams,
   UpdateRoomParams,
   UpdateRoomScheduleParams,
 } from '@shared/core/switch-servers/switch-servers';
@@ -569,11 +571,31 @@ export const workspacesController = createRPCController({
    * connection may create channels. Admin-only, like registering one; see
    * `updateBridgeOnServer` for the recoverable-failure mapping.
    */
-  updateBridge: (params: UpdateBridgeParams): Promise<UpdateBridgeResult> =>
+  updateBridge: (
+    params: Omit<UpdateBridgeParams, 'connectionConfig'>
+  ): Promise<UpdateBridgeResult> =>
     withReachableWorkspaceSession(params.workspaceId, (server) =>
       updateBridgeOnServer(server, {
         bridgeId: params.bridgeId,
         channelCreationEnabled: params.channelCreationEnabled,
+      })
+    ),
+
+  /**
+   * Put new tokens on a connection to the workspace's own bot, after the old
+   * ones were rotated or leaked. The server keeps the rest of the connection's
+   * settings and restarts it with them; its rooms are untouched. Admin-only.
+   * The tokens go to the server and nowhere else.
+   */
+  replaceBridgeTokens: (params: {
+    workspaceId: string;
+    bridgeId: string;
+    tokens: Record<string, string>;
+  }): Promise<UpdateBridgeResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateBridgeOnServer(server, {
+        bridgeId: params.bridgeId,
+        connectionConfig: params.tokens,
       })
     ),
 
@@ -772,6 +794,8 @@ export const workspacesController = createRPCController({
       inputs: Record<string, string | number | boolean>;
       filled: Record<string, string>;
       templateName: string;
+      /** The template the document is, when it is one; see `runTemplateDocument`. */
+      templateId: string | null;
       /** Where the run was started, for the agents it makes. */
       entryPoint: UiEntryPoint;
     }
@@ -875,9 +899,16 @@ export const workspacesController = createRPCController({
    * write access to the room needs the gateway's refusal, not a saved-looking
    * field holding a value the server never took.
    */
+  /** Name a room after its linked channel. Refusals propagate in the gateway's own words. */
+  syncRoomName: (params: SyncRoomNameParams): Promise<RemoteRoomDetail> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      syncRoomName(server, params.roomId)
+    ),
+
   updateRoom: (params: UpdateRoomParams): Promise<RemoteRoomDetail> =>
     withReachableWorkspaceSession(params.workspaceId, (server) =>
       updateRoom(server, params.roomId, {
+        name: params.name,
         description: params.description,
         instructions: params.instructions,
       })

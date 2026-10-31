@@ -71,6 +71,9 @@ dev = [
     "pytest-asyncio>=0.24",
     "testcontainers>=4.14.2",
     "types-croniter>=6.2.4.20261006",
+    "pytest-xdist>=3.6",
+    "pytest-split>=0.10",
+    "pytest-timeout>=2.3",
 ]
 
 [tool.ruff]

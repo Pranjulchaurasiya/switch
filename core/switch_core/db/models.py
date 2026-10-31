@@ -96,6 +96,13 @@ class Tenant(Base):
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # Whether a catalog service no workspace admin has switched on or off
+    # (`WorkspaceServiceSetting`) is on. Off for every workspace made since
+    # services started off; on for those that already had members then, so
+    # what they were using kept working.
+    services_on_by_default: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
 
 
 class TenantMember(Base):
@@ -871,6 +878,7 @@ room_agents = Table(
         ["tenant_id", "room_id"],
         ["rooms.tenant_id", "rooms.id"],
         name="fk_room_agents_room",
+        ondelete="CASCADE",
     ),
     ForeignKeyConstraint(
         ["tenant_id", "agent_id"],
@@ -896,6 +904,7 @@ room_skills = Table(
         ["tenant_id", "room_id"],
         ["rooms.tenant_id", "rooms.id"],
         name="fk_room_skills_room",
+        ondelete="CASCADE",
     ),
     ForeignKeyConstraint(
         ["tenant_id", "skill_id"],
@@ -925,6 +934,15 @@ class Room(TenantScoped, Base):
         # A run is listed, checked and stopped by its root on every agent
         # create and every look at Recently used.
         Index("ix_rooms_run_id", "run_id"),
+        # One room per Switch Console create request, whichever process or
+        # retry gets there first.
+        Index(
+            "uq_rooms_chat_operation_id",
+            "tenant_id",
+            text("(metadata ->> 'chat_operation_id')"),
+            unique=True,
+            postgresql_where=text("metadata ? 'chat_operation_id'"),
+        ),
         UniqueConstraint(
             "tenant_id", "matrix_room_id", name="uq_rooms_tenant_matrix_room_id"
         ),
@@ -1176,6 +1194,7 @@ class Task(TenantScoped, Base):
             ["tenant_id", "room_id"],
             ["rooms.tenant_id", "rooms.id"],
             name="fk_tasks_room",
+            ondelete="CASCADE",
         ),
         ForeignKeyConstraint(
             ["tenant_id", "requester_agent_id"],
@@ -1230,6 +1249,7 @@ room_references = Table(
         ["tenant_id", "room_id"],
         ["rooms.tenant_id", "rooms.id"],
         name="fk_room_references_room",
+        ondelete="CASCADE",
     ),
     ForeignKeyConstraint(
         ["tenant_id", "reference_id"],
@@ -1255,6 +1275,7 @@ room_documents = Table(
         ["tenant_id", "room_id"],
         ["rooms.tenant_id", "rooms.id"],
         name="fk_room_documents_room",
+        ondelete="CASCADE",
     ),
     ForeignKeyConstraint(
         ["tenant_id", "document_id"],
@@ -1421,6 +1442,113 @@ class Template(TenantScoped, Base):
     )
 
 
+class TemplateInstall(TenantScoped, Base):
+    """One run of a template whose source the server vouches for: which
+    template, at which revision, and what it was run with.
+
+    ``source`` is ``official`` for a template that comes with Switch
+    (``template_id`` is its ``official:`` id, which nobody can save under) or
+    ``saved`` for a stored template (``template_id`` is its row's id, kept
+    after the row is deleted). ``inputs`` and ``builtins`` are what the
+    document was rendered with, so a later revision can be rendered the same
+    way to see what it would set. Written only by the server, when it runs a
+    template; nothing a caller sends names one.
+    """
+
+    __tablename__ = "template_installs"
+    __table_args__ = (
+        UniqueConstraint("id", "tenant_id", name="uq_template_installs_id_tenant"),
+        CheckConstraint(
+            "source IN ('official', 'saved')", name="ck_template_installs_source"
+        ),
+        Index("ix_template_installs_tenant_template", "tenant_id", "template_id"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    # Goes with its owner, whose agents it created go too.
+    owner_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    template_id: Mapped[str] = mapped_column(Text, nullable=False)
+    template_name: Mapped[str] = mapped_column(Text, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    inputs: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    builtins: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class TemplateInstallResource(TenantScoped, Base):
+    """An agent or room a template install created, under the key the
+    template gives it, with a fingerprint of each value the template set.
+
+    A fingerprint still equal to the value's own is a value nobody has
+    changed since the template set it, which an update may replace; one that
+    differs was changed by someone, and is left as they made it. Exactly one
+    of ``agent_id`` and ``room_id`` is set, and the row goes with it.
+    """
+
+    __tablename__ = "template_install_resources"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "install_id"],
+            ["template_installs.tenant_id", "template_installs.id"],
+            name="fk_template_install_resources_install",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_template_install_resources_agent",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_template_install_resources_room",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "(agent_id IS NULL) <> (room_id IS NULL)",
+            name="ck_template_install_resources_one_resource",
+        ),
+        Index(
+            "uq_template_install_resources_agent",
+            "tenant_id",
+            "agent_id",
+            unique=True,
+            postgresql_where=text("agent_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_template_install_resources_room",
+            "tenant_id",
+            "room_id",
+            unique=True,
+            postgresql_where=text("room_id IS NOT NULL"),
+        ),
+        Index("ix_template_install_resources_install", "tenant_id", "install_id"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    install_id: Mapped[str] = mapped_column(Text, nullable=False)
+    key: Mapped[str] = mapped_column(Text, nullable=False)
+    agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fingerprints: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # What Switch has to tell the agent about its template, until it reads
+    # how it differs from it (``get_template_status``): a newer revision it
+    # was not brought fully up to. Null when there is nothing to tell.
+    notice: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 # ── Packages ──────────────────────────────────────────────────────────────────
 
 
@@ -1440,6 +1568,7 @@ room_packages = Table(
         ["tenant_id", "room_id"],
         ["rooms.tenant_id", "rooms.id"],
         name="fk_room_packages_room",
+        ondelete="CASCADE",
     ),
     ForeignKeyConstraint(
         ["tenant_id", "package_id"],
@@ -1821,6 +1950,10 @@ class MessagingEventReceipt(TenantScoped, Base):
 # ── Server-Side Connectors ────────────────────────────────────────────────────
 
 
+# Nothing reads or writes this table any more. It is dropped a release after
+# the code that used it went, so a release still running that code during a
+# rolling deploy finds it there (`migrations/script.py.mako`). Until then the
+# model keeps `create_all` in step with the migrated schema.
 class ServerConnector(TenantScoped, Base):
     __tablename__ = "server_connectors"
     __table_args__ = (
@@ -3182,6 +3315,34 @@ class ChatHidden(TenantScoped, Base):
     )
 
 
+class ChatRead(TenantScoped, Base):
+    """How far one person has read a chat: the last room position they were
+    shown. Only moves forward; set to the room's head as they join, so what
+    was said before they arrived is not unread."""
+
+    __tablename__ = "chat_reads"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "user_id", "room_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_chat_reads_room",
+            ondelete="CASCADE",
+        ),
+    )
+
+    user_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="CASCADE", name="fk_chat_reads_user"),
+        nullable=False,
+    )
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    read_through_seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class ChatOwnerGrant(TenantScoped, Base):
     """A membership held only because the person owns an agent in the room.
 
@@ -4201,7 +4362,9 @@ class ServerAuditEvent(Base):
 class WorkspaceServiceSetting(TenantScoped, Base):
     """A workspace admin switched a catalog service on or off for the workspace.
 
-    No row means on: a row is written only when an admin touches the switch,
+    No row means the workspace's default (`Tenant.services_on_by_default`),
+    off for a workspace made since services started off: a row is written
+    only when an admin touches the switch,
     so `updated_by` always names a person. `service` is a catalog slug, checked
     in code as `ServiceConnection.service` is. Off, nobody in the workspace can
     connect, grant or be issued a token for it, and its grants drop out of
@@ -4301,6 +4464,10 @@ class ServiceTokenIssuance(TenantScoped, Base):
     token has expired or been revoked. `token_sha256` stays, so a leaked token
     can be traced to the agent it was issued to. Records are pruned after
     `service_token_retention_days`.
+
+    `revoke_requested` on a token held without its ciphertext from the start
+    (the owner's own, passed through) means its access was withdrawn while it
+    was live: nothing can revoke it, and it stays valid until `expires_at`.
     """
 
     __tablename__ = "service_token_issuances"
@@ -4318,6 +4485,14 @@ class ServiceTokenIssuance(TenantScoped, Base):
             "tenant_id",
             "expires_at",
             postgresql_where=text("encrypted_token IS NOT NULL"),
+        ),
+        # The tokens that cannot be revoked, for marking the ones still live
+        # when their access is withdrawn.
+        Index(
+            "ix_service_token_issuances_unrevocable",
+            "tenant_id",
+            "expires_at",
+            postgresql_where=text("encrypted_token IS NULL"),
         ),
     )
 

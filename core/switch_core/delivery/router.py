@@ -90,6 +90,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.room_store import follow_ups_enabled_in, main_agent_in
+from switch_core.db.stores.template_install_store import TemplateInstallStore
 from switch_core.delivery.addressing import AddressingResolver, SenderPrincipal
 from switch_core.delivery.conversation import (
     ConversationMessage,
@@ -150,6 +151,9 @@ GROUP_SWEEP_SECONDS = 5.0
 _COMMAND_EVENT = "com.switch.command"
 
 
+_INSTALLS = TemplateInstallStore()
+
+
 class RoomReads:
     """What deciding one row reads about its room, read once and shared by
     every agent the row is decided for.
@@ -190,6 +194,7 @@ class RoomReads:
         self._claims: dict[str, list[str]] = {}
         self._standings: list[BudgetStanding] | None = None
         self._clients: dict[str, Client | None] = {}
+        self._notices: dict[str, str] | None = None
         self.addressing = _RoomAddressing(
             self, services=services, client_store=client_store
         )
@@ -215,7 +220,13 @@ class RoomReads:
         """
         found = (
             await session.execute(
-                select(Room, CollaborationBridge.agent_greetings_enabled)
+                select(
+                    Room,
+                    CollaborationBridge.agent_greetings_enabled,
+                    select(func.count())
+                    .where(room_agents.c.room_id == Room.id)
+                    .scalar_subquery(),
+                )
                 .outerjoin(
                     CollaborationBridge,
                     and_(
@@ -228,7 +239,7 @@ class RoomReads:
         ).first()
         if found is None:
             return None
-        room, greetings = found
+        room, greetings, agent_count = found
         rows = (
             await session.execute(
                 select(
@@ -286,9 +297,11 @@ class RoomReads:
                 bridge_id=room.bridge_id,
                 agent_greetings_enabled=True if greetings is None else greetings,
                 channel_type=room.channel_type,
+                agent_count=agent_count,
                 follow_ups_enabled=follow_ups_enabled_in(room.metadata_),
                 main_agent_id=main_agent_in(room.metadata_),
                 agent_greeting=(room.metadata_ or {}).get("agent_greeting"),
+                console_chat="chat_operation_id" in (room.metadata_ or {}),
             ),
             group_id=room.group_id,
             members=sorted(members, key=lambda member: member.agent.id),
@@ -375,6 +388,15 @@ class RoomReads:
             )
         return self._standings
 
+    async def switch_notice(self, session: AsyncSession, agent_id: str) -> str | None:
+        """What Switch has to tell an agent before its next message (see
+        `TemplateInstallResource.notice`), read for every agent member at once."""
+        if self._notices is None:
+            self._notices = await _INSTALLS.notices_for_agents(
+                session, [member.agent.id for member in self.members]
+            )
+        return self._notices.get(agent_id)
+
     async def get_by_transport_user_id(
         self, session: AsyncSession, transport_user_id: str
     ) -> Client | None:
@@ -421,6 +443,16 @@ class _RoomAddressing(AddressingResolver):
         if room_id != self._reads.room_id:
             return await super().role_of(session, room_id, agent_id)
         return (await self._reads.role_names(session)).get(agent_id)
+
+    async def auto_addressed_room(
+        self, session: AsyncSession, *, room_id: str, channel_type: str | None
+    ) -> bool:
+        count = self._reads.meta.agent_count
+        if room_id != self._reads.room_id or count is None:
+            return await super().auto_addressed_room(
+                session, room_id=room_id, channel_type=channel_type
+            )
+        return channel_type == "direct" and count == 1
 
     async def group_of(self, session: AsyncSession, room_id: str) -> str | None:
         if room_id != self._reads.room_id:
@@ -1259,6 +1291,7 @@ class MessageRouter:
             addressing=reads.addressing,
             budget_guard=reads.budget_guard,
             clients=reads,
+            notices=reads,
             cloud_waking_notices=self._cloud_waking.setdefault(member.agent.id, set()),
         )
 
