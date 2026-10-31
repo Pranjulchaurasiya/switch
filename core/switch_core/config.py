@@ -18,6 +18,7 @@ from switch_core.feature_flags import (
     AGENT_CHATS,
     AGENT_MANAGEMENT,
     FOLLOW_THE_CONVERSATION,
+    GROUP_CHATS,
     HOSTED_AGENTS,
     KNOWN_FEATURE_FLAGS,
     SERVICE_CONNECTIONS,
@@ -739,17 +740,28 @@ class SwitchConfig(BaseSettings):
     # three round trips and a transaction before any work, which under agent
     # load was over a third of all the transactions core ran. What it catches
     # is a connection that died while it sat in the pool, as every pooled
-    # connection does when the database restarts or fails over. Without it the
-    # first query on such a connection fails, and SQLAlchemy then replaces
-    # every connection the pool held. So on each pod the first query fails
-    # (`test_pool_pre_ping.py`), along with any query that was running when the
-    # database went, which fails with the ping too. How soon a connection left
+    # connection does when the database restarts or fails over. A restart
+    # closes the socket, which asyncpg notices, and the engine's checkout check
+    # already replaces a closed connection without a round trip
+    # (`test_pool_pre_ping.py`); a query running when the database went fails
+    # with the ping or without it. How soon a connection left
     # open by a failover is known to be dead is up to `db_tcp_keepalive_*` and
     # `db_tcp_user_timeout` below, with the ping or without it.
     db_pool_pre_ping: bool = False
     # SQLAlchemy's default is 30s, long enough that pool starvation surfaces as
     # unexplained latency rather than an error. Fail fast and loudly instead.
     db_pool_timeout: float = 5.0
+    # How many agent and controller connections this process opens at once
+    # (`open_gate.py`). Opening one takes dozens of transactions from the same
+    # pool the process's requests and its lease renewal use, and when a pod
+    # goes away every agent it held opens on the pods left within seconds.
+    # Past this many, an open waits briefly for a slot and is then told when to
+    # come back, in the order it arrived, at the pace opens are taking here,
+    # instead of queueing on the pool. 8 is what the pod-kill tests ran with:
+    # with 300 agents on two pods and 30 + 10 pools, no pool timeouts and no
+    # agent lost, against 161 pool timeouts and 56 agents lost without the
+    # gate (dev-abel, 28 Oct 2026). 0 turns it off.
+    agent_open_limit: int = Field(default=8, ge=0)
 
     # Resolving a bearer token to its agent is the highest-frequency query in
     # the system — it runs before every authenticated request, and a fleet of
@@ -1307,6 +1319,10 @@ class SwitchConfig(BaseSettings):
     @property
     def agent_chats_enabled(self) -> bool:
         return self.feature_flags[AGENT_CHATS]
+
+    @property
+    def group_chats_enabled(self) -> bool:
+        return self.feature_flags[GROUP_CHATS]
 
     @model_validator(mode="after")
     def _validate_outbound_allowed_private_hosts(self) -> "SwitchConfig":
