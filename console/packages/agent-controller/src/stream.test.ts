@@ -240,6 +240,29 @@ describe('runControllerStream', () => {
     expect(Date.now() - started).toBeGreaterThanOrEqual(190);
   });
 
+  it('waits three of the server’s beats before calling a quiet socket dead', async () => {
+    const scripted = new ScriptedClient();
+    // Switch beats every 0.2 s here, as slowly as the 200 ms idle timeout: three beats it is.
+    scripted.sockets = () =>
+      scriptedSocket(
+        [
+          {
+            event: 'connection_state',
+            data: { connection_id: 'connection-1', heartbeat_interval_s: 0.2 },
+          },
+        ],
+        'open'
+      );
+    const stop = new AbortController();
+    const { ending } = run(scripted, stop.signal);
+    await waitFor(() => scripted.attaches.length === 1, 'an attach');
+    await delay(450);
+    expect(scripted.attaches).toHaveLength(1);
+    await waitFor(() => scripted.attaches.length >= 2, 'a second attach once three beats passed');
+    stop.abort();
+    await ending;
+  });
+
   it('opens a new connection, from the cursors as they stand, when Switch no longer knows it', async () => {
     const scripted = new ScriptedClient();
     scripted.sockets = () =>
@@ -371,6 +394,26 @@ describe('runControllerStream', () => {
     stop.abort();
     await ending;
     expect(opens).toBe(3);
+  });
+
+  it('opens again when a busy server says, not on its own backoff', async () => {
+    const scripted = new ScriptedClient();
+    let opens = 0;
+    scripted.open = async () => {
+      opens++;
+      if (opens === 1) throw new ControllerApiError(503, 'busy', 'opening at capacity', true, 0.3);
+      return opened;
+    };
+    scripted.sockets = () => scriptedSocket([state], 'open');
+    const stop = new AbortController();
+    const started = Date.now();
+    const { states, ending } = run(scripted, stop.signal);
+    await waitFor(() => states.includes('connected'), 'a connection', 3_000);
+    stop.abort();
+    await ending;
+    expect(opens).toBe(2);
+    // The backoff alone would have opened again after 5 ms.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(290);
   });
 
   it('waits less each time a socket attached, however briefly, and never long', async () => {

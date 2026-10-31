@@ -7,12 +7,17 @@ import {
   managedServerStoppedPhase,
   noteManagedServerUnanswered,
 } from '@main/core/managed-switch-server/managed-server-status';
+import {
+  type ControllerProviderReport,
+  providerReport,
+} from '@main/core/switch-servers/controller-provider-report';
 import { rememberBridgePlatforms } from '@main/core/telemetry/bridge-platform';
 import { assertedTenant } from '@main/core/workspaces/asserted-tenant';
 import { type CloudMachine, cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
 import type { RemoteFeatureFlag } from '@shared/core/feature-flags/feature-flags';
 import type {
   AdvancedConfigField,
+  ManagedAgentTemplate,
   ManagedMachine,
 } from '@shared/core/managed-agents/managed-agents';
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
@@ -303,6 +308,32 @@ async function silentLogin(server: SwitchServer): Promise<string | null> {
   // `switchTenant` stores the scoped cookie; the minted one it replaced would
   // send this very call to the wrong workspace.
   return (await getSessionCookie(server.id)) ?? minted;
+}
+
+/** Where to open an authenticated gateway WebSocket, and the headers to open it with. */
+export type GatewaySocketTarget = { url: string; headers: Record<string, string> };
+
+/**
+ * The URL and headers for an authenticated WebSocket to the gateway: the
+ * session cookie (renewed if it is near expiry) and Console's identity, as
+ * every gateway call sends them. Node's WebSocket takes request headers,
+ * unlike a browser's. Refuses a server that is known to be unreachable or
+ * stopped, as `gatewayRequest` does.
+ */
+export async function gatewaySocketTarget(
+  server: SwitchServer,
+  path: string
+): Promise<GatewaySocketTarget> {
+  const blocked = managedServerHostBlocked(server);
+  if (blocked) throw new HostUnreachableError(blocked);
+  const stopped = managedServerStoppedPhase(server);
+  if (stopped) throw new ManagedServerStoppedError(server, stopped);
+  const identity = await consoleIdentityHeaders(server);
+  const cookie = await resolveAuthCookie(server);
+  return {
+    url: gatewayUrl(server, path).replace(/^http/, 'ws'),
+    headers: { ...identity, Cookie: `switch_auth=${cookie}` },
+  };
 }
 
 /**
@@ -2461,6 +2492,12 @@ export async function runTemplateDocument(
     /** Existing agents standing in for slots that allow it, by resource key. */
     filled: Record<string, string>;
     templateName: string;
+    /**
+     * The template the document is, when it is one: the server records the run
+     * as that template's, to update its agents from, only when the document is
+     * exactly the template's.
+     */
+    templateId: string | null;
   }
 ): Promise<TemplateRunResult> {
   return postTemplateRun(server, '/rooms/from-template-document', {
@@ -2468,6 +2505,7 @@ export async function runTemplateDocument(
     inputs: body.inputs,
     filled: body.filled,
     template_name: body.templateName,
+    ...(body.templateId !== null ? { template_id: body.templateId } : {}),
   });
 }
 
@@ -2865,6 +2903,8 @@ type RoomSummaryJson = {
   bridge_type?: string | null;
   external_channel_url?: string | null;
   owner_id?: string | null;
+  viewer_is_member?: boolean;
+  is_console_chat?: boolean;
   archived: boolean;
   created_at: string;
 };
@@ -2880,6 +2920,8 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
     bridgeType: r.bridge_type ?? null,
     externalChannelUrl: r.external_channel_url ?? null,
     ownerId: r.owner_id ?? null,
+    viewerIsMember: r.viewer_is_member ?? false,
+    isConsoleChat: r.is_console_chat ?? false,
     archived: r.archived,
     createdAt: r.created_at,
   };
@@ -2900,6 +2942,7 @@ type RoomDetailJson = RoomSummaryJson & {
   /** Absent from a server that predates it; kept absent rather than read as
    * "no channel", so the delete dialog can say it does not know. */
   channel_on_delete?: ChannelRetirement | null;
+  linked_channel_name?: string | null;
 };
 
 function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
@@ -2909,7 +2952,24 @@ function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
     agentIds: r.agent_ids ?? [],
     connectedUserNames: r.connected_user_names ?? [],
     channelOnDelete: r.channel_on_delete,
+    linkedChannelName: r.linked_channel_name ?? null,
   };
+}
+
+/**
+ * Name a room after the channel it is linked to (`POST /rooms/{id}/sync-name`),
+ * so it follows the channel's renames from then on. The room's owner or an
+ * admin only; refused while Switch has not seen the channel's name.
+ */
+export async function syncRoomName(
+  server: SwitchServer,
+  roomId: string
+): Promise<RemoteRoomDetail> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/sync-name`, {
+    authenticated: true,
+    method: 'POST',
+  });
+  return mapRoomDetail((await res.json()) as RoomDetailJson);
 }
 
 /** One room in full (`GET /rooms/{id}`) — what its configuration page reads. */
@@ -2944,7 +3004,7 @@ export async function fetchRoomAgentIds(server: SwitchServer, roomId: string): P
 export async function updateRoom(
   server: SwitchServer,
   roomId: string,
-  changes: { description?: string; instructions?: string }
+  changes: { name?: string; description?: string; instructions?: string }
 ): Promise<RemoteRoomDetail> {
   const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}`, {
     authenticated: true,
@@ -3683,16 +3743,6 @@ export type ManagementController = {
   sealingKey: { key: string; keyId: string } | null;
 };
 
-/** A provider as a controller reports it: installed, and whether its login works. */
-export type ControllerProviderReport = {
-  /** The Switch definition provider id (`claude`, `codex`, …). */
-  provider: string;
-  installed: boolean;
-  auth: 'ok' | 'expired' | 'missing' | 'unknown';
-  /** Why its login does not work, in the controller's words; null when it said nothing. */
-  problem: string | null;
-};
-
 /** A managed agent as the owner's list shows it. */
 export type ManagedAgent = {
   agentId: string;
@@ -3709,6 +3759,12 @@ export type ManagedAgent = {
   machine?: ManagedMachine | null;
   desiredState: 'running' | 'stopped';
   revision: number;
+  /**
+   * The template that created it, as the server's record of that run has it:
+   * null for an agent no template run the server vouches for created, and
+   * undefined from a server too old to say.
+   */
+  template?: ManagedAgentTemplate | null;
   provider: string;
   model: string | null;
   /** The provider's advanced configuration, keyed by its field keys; unset fields are absent. */
@@ -3760,6 +3816,8 @@ type ManagedAgentJson = {
   desired_state: 'running' | 'stopped';
   description?: string;
   revision?: number;
+  /** Absent from servers older than template installs. */
+  template?: { id: string; key: string; revision: number } | null;
   definition: {
     provider?: unknown;
     model?: unknown;
@@ -3896,13 +3954,6 @@ export async function fetchMachineOperation(
   return { state: found.state, error: found.result?.error ?? null };
 }
 
-const PROVIDER_AUTH_STATES: readonly ControllerProviderReport['auth'][] = [
-  'ok',
-  'expired',
-  'missing',
-  'unknown',
-];
-
 /**
  * The providers in a controller's last status report. An entry that does not
  * say which provider it is, or whether it is installed, is left out; a login
@@ -3912,19 +3963,9 @@ function providerReports(status: unknown): ControllerProviderReport[] {
   if (!status || typeof status !== 'object') return [];
   const providers = (status as { providers?: unknown }).providers;
   if (!Array.isArray(providers)) return [];
-  return providers.flatMap((entry: unknown): ControllerProviderReport[] => {
-    if (!entry || typeof entry !== 'object') return [];
-    const { provider, installed, auth, auth_problem } = entry as Record<string, unknown>;
-    if (typeof provider !== 'string' || typeof installed !== 'boolean') return [];
-    const known = PROVIDER_AUTH_STATES.find((state) => state === auth);
-    return [
-      {
-        provider,
-        installed,
-        auth: known ?? 'unknown',
-        problem: typeof auth_problem === 'string' && auth_problem ? auth_problem : null,
-      },
-    ];
+  return providers.flatMap((entry: unknown) => {
+    const report = providerReport(entry);
+    return report ? [report] : [];
   });
 }
 
@@ -3973,6 +4014,7 @@ function toManagedAgent(json: ManagedAgentJson): ManagedAgent {
     machine: machineOf(json),
     desiredState: json.desired_state,
     revision: json.revision ?? 0,
+    ...(json.template !== undefined ? { template: json.template } : {}),
     provider: typeof json.definition?.provider === 'string' ? json.definition.provider : 'unknown',
     model: typeof json.definition?.model === 'string' ? json.definition.model : null,
     advancedConfig: advancedConfigOf(json.agent_id, json.definition?.advanced_config),
@@ -4089,21 +4131,19 @@ export async function fetchAdvancedConfigSchema(
   return Object.fromEntries(
     Object.entries(providers).map(([provider, { fields }]) => [
       provider,
-      fields.map(
-        (field): AdvancedConfigField => ({
-          key: field.key,
-          label: field.label,
-          type: field.type,
-          ...(field.help !== null ? { help: field.help } : {}),
-          ...(field.placeholder !== null ? { placeholder: field.placeholder } : {}),
-          ...(field.options !== null ? { options: field.options } : {}),
-          ...(field.catalogue === null
-            ? {}
-            : field.catalogue.kind === 'model'
-              ? { catalogue: { kind: 'model' } }
-              : { catalogue: { kind: 'model-variant', modelField: field.catalogue.model_field } }),
-        })
-      ),
+      fields.map((field): AdvancedConfigField => ({
+        key: field.key,
+        label: field.label,
+        type: field.type,
+        ...(field.help !== null ? { help: field.help } : {}),
+        ...(field.placeholder !== null ? { placeholder: field.placeholder } : {}),
+        ...(field.options !== null ? { options: field.options } : {}),
+        ...(field.catalogue === null
+          ? {}
+          : field.catalogue.kind === 'model'
+            ? { catalogue: { kind: 'model' } }
+            : { catalogue: { kind: 'model-variant', modelField: field.catalogue.model_field } }),
+      })),
     ])
   );
 }
